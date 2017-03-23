@@ -57,7 +57,7 @@ GridCell *cells;
 GridCell *getCell (int gridX, int gridY) {
  
     if (gridX >= 0 && gridX < grid_width && gridY >= 0 && gridY < grid_height)
-        return &(cells[gridY * grid_height + gridX]);
+        return &(cells[gridY * grid_width + gridX]);
     else
         return NULL;
     
