@@ -41,9 +41,9 @@ while(!feof($fd)) {
 
     $ar = fgetcsv($fd);
 
-    $lon = $ar[0] - 180.0; // У тебя lat и lon идут от 0 а не от -180 и -90
-    $lat = $ar[1] - 90.0; //
-    $val = $ar[2];
+    $lon = $ar[4];
+    $lat = $ar[5];
+    $val = $ar[6];
 
     $values[] = array(
         $lon, $lat, $val
