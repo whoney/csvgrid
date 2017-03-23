@@ -1,3 +1,3 @@
 csvgrid: csvgrid.cpp
-	g++ -O2 $^ -o $@
+	g++ -O2 --std=c++11 $^ -o $@
 

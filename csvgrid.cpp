@@ -4,6 +4,7 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <algorithm>
 
 using namespace std;
 
@@ -11,6 +12,13 @@ typedef float csv_float; // replace with double if needed
 #define csv_stof stof // replace with stod or stold for double
 
 csv_float output_default_value = 0.0; // numeric_limits<csv_float>::min();
+
+const int source_tag_column1 = 2;
+const int source_tag_column2 = 3;
+
+const int source_lon_column = 4;        // longitude -180..180
+const int source_lat_column = 5;        // latitude -90..90
+const int source_value_column = 6;
 
 struct SourcePoint {
  
@@ -36,9 +44,7 @@ csv_float lon_end;
 csv_float lat_step;
 csv_float lon_step;
 
-int source_lat_column;
-int source_lon_column;
-vector<int> source_value_columns;
+vector<pair <string, string>> source_tags;
 int numValues;
 
 int grid_width;
@@ -57,10 +63,19 @@ GridCell *getCell (int gridX, int gridY) {
     
 }
 
+GridCell *getCellByLatLon (csv_float lat, csv_float lon) {
+    
+    int cell_x = (int) ((lon - lon_start) / lon_step);
+    int cell_y = (int) ((lat - lat_start) / lat_step);
+    
+    return getCell (cell_x, cell_y);
+    
+}
+
 void barnes_interpolation (csv_float convergence_factor) {
 
-    int gridSearchRadiusX = length_scale / lat_step;
-    int gridSearchRadiusY = length_scale / lon_step;
+    int gridSearchRadiusX = ceil (length_scale / lon_step);
+    int gridSearchRadiusY = ceil (length_scale / lat_step);
     
     vector<csv_float> influence_sums (numValues);
 
@@ -82,8 +97,8 @@ void barnes_interpolation (csv_float convergence_factor) {
 
             if (targetCell) {
                 
-                csv_float targetLat = lat_start + (gridX * lat_step);
-                csv_float targetLon = lon_start + (gridY * lon_step);
+                csv_float targetLon = lon_start + (gridX * lon_step);
+                csv_float targetLat = lat_start + (gridY * lat_step);
                 
                 csv_float weightSum = 0.0;
                 for (int i = 0; i < numValues; i++)
@@ -106,17 +121,13 @@ void barnes_interpolation (csv_float convergence_factor) {
                         if (lookCell) {
                             for (const SourcePoint& sourcePoint: lookCell -> sourcePoints) {
                                 
-                                csv_float lon_distance = sourcePoint.lon - targetLon;
+                                csv_float lon_distance = abs (sourcePoint.lon - targetLon);
                                 csv_float lat_distance = abs (sourcePoint.lat - targetLat);
-                                if (lat_distance > 180.0)
-                                    lat_distance = 360.0 - lat_distance; 
+                                if (lon_distance > 180.0)
+                                    lon_distance = 360.0 - lon_distance; 
                                 
                                 csv_float dist_squared = lon_distance * lon_distance + lat_distance * lat_distance;
                                 csv_float weight = exp (-dist_squared / (length_scale * length_scale * convergence_factor));
-                                
-                                //cout << "targetLat " << targetLat << " targetLon " << targetLon << " sourceLat" << sourcePoint.lat << " sourceLon " << sourcePoint.lon << endl;
-                                
-                                //cout << "lonD " << lon_distance << " latD " << lat_distance << " exp: " << (-dist_squared / (length_scale * length_scale * convergence_factor)) << " weight: " << weight << endl;
                                 
                                 for (int i = 0; i < numValues; i++) 
                                     influence_sums[i] += (sourcePoint.values[i] - lookCell -> prevOutputValues[i]) * weight;
@@ -156,9 +167,49 @@ void split_string (const string& str, const char delim, vector<string>& tokens) 
     while (pos < str.length() && prev < str.length());
 }
 
+void scan_tags (ifstream& ifs) {
+ 
+    vector<string> tokens;
+    pair<string,string> last_tag;
+    int last_value_index = -1;
+    
+    for (string line; getline(ifs, line);) {
+        split_string (line, ',', tokens);
+        if (source_tag_column1 < tokens.size () && source_tag_column2 < tokens.size ()) {
+            
+            pair<string,string> tag (tokens[source_tag_column1], tokens[source_tag_column2]);
+            
+            if (tag != last_tag) {
+                last_value_index = -1;
+                for (int i = 0; i < source_tags.size (); i++) {
+                    if (source_tags[i] == tag) {
+                        last_value_index = i;
+                        break;
+                    }
+                }
+                
+                if (last_value_index == -1) {
+                    last_value_index = source_tags.size ();
+                    source_tags.push_back (tag);
+                }
+                
+                last_tag = tag;
+                
+            }
+        }
+    }
+    
+    for (auto& tag: source_tags) {
+        cout << "Found tag: " << tag.first << ", " << tag.second << endl;
+    }
+    
+    numValues = source_tags.size ();
+    
+}
+
 int main (int argc, char *argv[]) {
     
-    if (argc != 14) {
+    if (argc != 11) {
      
         cerr << "Use: " 
             << string(argv[0]) 
@@ -169,15 +220,11 @@ int main (int argc, char *argv[]) {
             << " <lon end>"
             << " <lat step>"
             << " <lon step>"
-            << " <source lat column>"
-            << " <source lon column>"
-            << " <source data columns like 2,3,4>"
             << " <length scale>"
             << " <passes>"
             << " <output csv>"
             << endl;
             
-        cerr << '\t' << "column numbers start from zero" << endl;
         cerr << '\t' << "passes are comma-separated floating values like 1.0,0.3,0.2" << endl;
             
         return 1;
@@ -190,27 +237,17 @@ int main (int argc, char *argv[]) {
     lon_end = csv_stof (string (argv[5]));
     lat_step = csv_stof (string (argv[6]));
     lon_step = csv_stof (string (argv[7]));
-    source_lat_column = stoi (string (argv[8]));
-    source_lon_column = stoi (string (argv[9]));
-    
-    vector<string> source_value_columns_s;
-    split_string (string (argv[10]), ',', source_value_columns_s);
-    for (const string& s: source_value_columns_s) {
-        source_value_columns.push_back (stoi (s));
-    }
-    
-    numValues = source_value_columns.size ();
-    
-    length_scale = csv_stof (string (argv[11]));
+
+    length_scale = csv_stof (string (argv[8]));
     
     vector<string> passes_strings;
     vector<csv_float> passes;
-    split_string (string (argv[12]), ',', passes_strings);
+    split_string (string (argv[9]), ',', passes_strings);
     for (const string& s: passes_strings)
         passes.push_back (csv_stof (s));
     
-    grid_width = (int) ((lat_end - lat_start) / lat_step);
-    grid_height = (int) ((lon_end - lon_start) / lon_step);
+    grid_width = (int) ((lon_end - lon_start) / lon_step);
+    grid_height = (int) ((lat_end - lat_start) / lat_step);
     
     cout << "Grid size: " << grid_width << "x" << grid_height << " (" << (grid_width * grid_height) << " points), length scale " << length_scale << endl;
     
@@ -221,6 +258,11 @@ int main (int argc, char *argv[]) {
         cerr << "Failed to open " << string (argv[1]) << endl;
         return 1;
     }
+    
+    scan_tags (ifs);
+    
+    ifs.clear();
+    ifs.seekg(0);
     
     cells = new GridCell[grid_width * grid_height];
     
@@ -234,30 +276,69 @@ int main (int argc, char *argv[]) {
         }
     }
     
+    bool first_line = true;
+    vector<string> tokens_template;
+    
     int source_point_count = 0;
     vector<string> tokens;
+    pair<string,string> last_tag;
+    int last_value_index = -1;
     
     for (string line; getline(ifs, line);) {
         split_string (line, ',', tokens);
         
         if (source_lat_column < tokens.size () && source_lon_column < tokens.size ()) {
+            
+            if (first_line) {
+                for (const string& s: tokens)
+                    tokens_template.push_back (s);
+                first_line = false;
+            }
+            
+            pair<string,string> tag (tokens[source_tag_column1], tokens[source_tag_column2]);
+            
+            if (tag != last_tag || last_value_index == -1) {
+                last_value_index = -1;
+                for (int i = 0; i < source_tags.size (); i++) {
+                    if (source_tags[i] == tag) {
+                        last_value_index = i;
+                        break;
+                    }
+                }
+                last_tag = tag;
+            }
+            
+            if (last_value_index == -1) {
+                cerr << "Unexpected tag" << endl;
+                return 1;
+            }
+            
             csv_float source_lat = csv_stof (tokens[source_lat_column]);
-            csv_float source_lon = csv_stof (tokens[source_lat_column]);
+            csv_float source_lon = csv_stof (tokens[source_lon_column]);
             
-            int cell_x = (int) ((source_lat - lat_start) / lat_step);
-            int cell_y = (int) ((source_lon - lon_start) / lon_step);
-            
-            GridCell *cell = getCell (cell_x, cell_y);
+            GridCell *cell = getCellByLatLon (source_lat, source_lon);
             
             if (cell) {
-
-                SourcePoint p;
-                p.lat = source_lat;
-                p.lon = source_lon;
-                for (int i: source_value_columns) 
-                    p.values.push_back (csv_stof (tokens[i]));
-
-                cell -> sourcePoints.push_back (p);
+                
+                csv_float value = csv_stof (tokens[source_value_column]);
+                
+                bool point_found = false;
+                for (SourcePoint& p: cell -> sourcePoints) {
+                    if (p.lat == source_lat && p.lon == source_lon) {
+                        p.values[last_value_index] = value;
+                        point_found = true;
+                        break;
+                    }
+                }
+                
+                if (!point_found) {
+                    SourcePoint p;
+                    p.lat = source_lat;
+                    p.lon = source_lon;
+                    p.values.resize (numValues);
+                    p.values[last_value_index] = value;
+                    cell -> sourcePoints.push_back (p);
+                }
                 
             }
             
@@ -274,34 +355,54 @@ int main (int argc, char *argv[]) {
         cout << "Pass: convergence factor " << convergence_factor << endl;
         barnes_interpolation (convergence_factor);
     }
-    
+
     cout << "Writing output..." << endl;
     
     ofstream ofs;
-    ofs.open (string (argv[13]));
+    ofs.open (string (argv[10]));
+    vector<string> output_tokens (tokens_template);
+    int value_index = 0;
     
-    for (int gridY = 0; gridY < grid_height; gridY ++) {
-        for (int gridX = 0; gridX < grid_width; gridX ++) {
-            
-            GridCell *targetCell = getCell (gridX, gridY);
+    for (const auto& tag: source_tags) {
+        
+        output_tokens[source_tag_column1] = tag.first;
+        output_tokens[source_tag_column2] = tag.second;
 
-            if (targetCell) {
+        for (int gridY = 0; gridY < grid_height; gridY ++) {
+            for (int gridX = 0; gridX < grid_width; gridX ++) {
                 
-                csv_float targetLat = gridX * lat_step;
-                csv_float targetLon = gridY * lon_step;
-                
-                ofs << targetLat << "," << targetLon;
-                
-                for (int i = 0; i < numValues; i++) 
-                    ofs << "," << (targetCell -> hasValues ? targetCell -> outputValues[i] : output_default_value);                    
+                GridCell *targetCell = getCell (gridX, gridY);
+
+                if (targetCell) {
                     
-                ofs << '\n';
+                    csv_float targetLon = lon_start + gridX * lon_step;
+                    csv_float targetLat = lat_start + gridY * lat_step;
+                    
+                    int column_index = 0;
+                    for (const string& s: output_tokens) {
+                        if (column_index != 0)
+                            ofs << ",";
+                        if (column_index == source_lat_column)
+                            ofs << targetLat;
+                        else if (column_index == source_lon_column)
+                            ofs << targetLon;
+                        else if (column_index == source_value_column)
+                            ofs << (targetCell -> hasValues ? targetCell -> outputValues[value_index] : output_default_value);
+                        else
+                            ofs << s;
+                        column_index ++;
+                    }
+                    
+                    ofs << '\n';
+                    
+                }
                 
             }
-            
         }
+        
+        value_index ++;
+        
     }
-    
     
     ofs.close ();
     
